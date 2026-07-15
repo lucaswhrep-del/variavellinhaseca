@@ -1,9 +1,11 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import {
-  getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut
+  getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut,
+  createUserWithEmailAndPassword, sendPasswordResetEmail
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
 import {
-  getFirestore, doc, getDoc, setDoc, collection, getDocs, query, where
+  getFirestore, doc, getDoc, setDoc, collection, getDocs, query, where,
+  writeBatch, serverTimestamp
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 import { firebaseConfig } from './firebase-config.js';
 
@@ -12,6 +14,8 @@ const PERIOD = '2026-07';
 const firebaseApp = initializeApp(firebaseConfig);
 const auth = getAuth(firebaseApp);
 const db = getFirestore(firebaseApp);
+const accountCreatorApp = initializeApp(firebaseConfig, 'account-creator');
+const accountCreatorAuth = getAuth(accountCreatorApp);
 
 const form = document.querySelector('#loginForm');
 const emailInput = document.querySelector('#loginEmail');
@@ -71,6 +75,79 @@ async function loadResults(profile) {
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 }
 
+const safeId = (value) => String(value || '')
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+const randomPassword = () => {
+  const bytes = crypto.getRandomValues(new Uint8Array(18));
+  return `${Array.from(bytes, (n) => (n % 36).toString(36)).join('')}A9!`;
+};
+
+window.persistImportedUsers = async (users) => {
+  const currentProfile = await resolveProfile(auth.currentUser);
+  if (!['administrador', 'admin'].includes(currentProfile.role)) throw new Error('Acesso restrito.');
+  let created = 0;
+  let existing = 0;
+
+  for (const raw of users) {
+    const user = {
+      name: raw.name.trim(), email: raw.email.trim().toLowerCase(),
+      role: raw.role.includes('admin') ? 'administrador' : raw.role.includes('supervisor') ? 'supervisor' : 'vendedor',
+      supervisor: (raw.supervisor || '').trim(), active: true, updatedAt: serverTimestamp()
+    };
+    try {
+      await createUserWithEmailAndPassword(accountCreatorAuth, user.email, randomPassword());
+      await signOut(accountCreatorAuth);
+      created += 1;
+      await sendPasswordResetEmail(auth, user.email);
+    } catch (error) {
+      await signOut(accountCreatorAuth).catch(() => {});
+      if (error.code === 'auth/email-already-in-use') existing += 1;
+      else throw new Error(`Erro no usuário ${user.name}: ${error.message}`);
+    }
+    await setDoc(doc(db, 'users', user.email), user, { merge: true });
+  }
+  return { saved: users.length, created, existing };
+};
+
+window.persistImportedResults = async (results) => {
+  const currentProfile = await resolveProfile(auth.currentUser);
+  if (!['administrador', 'admin'].includes(currentProfile.role)) throw new Error('Acesso restrito.');
+
+  const userSnapshots = await getDocs(collection(db, 'users'));
+  const emailsByName = new Map(userSnapshots.docs.map((item) => {
+    const user = item.data();
+    return [String(user.name || '').trim().toUpperCase(), String(user.email || item.id).toLowerCase()];
+  }));
+  const missing = [...new Set(results.filter((item) => !emailsByName.has(item.name.trim().toUpperCase())).map((item) => item.name))];
+  if (missing.length) throw new Error(`Cadastre primeiro: ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? '…' : ''}`);
+
+  const resultRef = collection(db, 'periods', PERIOD, 'results');
+  const previous = await getDocs(resultRef);
+  for (let start = 0; start < previous.docs.length; start += 400) {
+    const batch = writeBatch(db);
+    previous.docs.slice(start, start + 400).forEach((item) => batch.delete(item.ref));
+    await batch.commit();
+  }
+
+  for (let start = 0; start < results.length; start += 400) {
+    const batch = writeBatch(db);
+    results.slice(start, start + 400).forEach((item) => {
+      const email = emailsByName.get(item.name.trim().toUpperCase());
+      const id = `${safeId(item.name)}-${safeId(item.material)}`;
+      batch.set(doc(resultRef, id), {
+        ...item, email, role: String(item.role || '').toLowerCase(),
+        updatedAt: serverTimestamp()
+      });
+    });
+    await batch.commit();
+  }
+  const refreshed = await loadResults(currentProfile);
+  window.setAppSession(currentProfile, refreshed);
+  return { saved: results.length };
+};
+
 onAuthStateChanged(auth, async (user) => {
   if (!user) {
     document.querySelector('#authScreen').hidden = false;
@@ -92,4 +169,3 @@ onAuthStateChanged(auth, async (user) => {
     await signOut(auth);
   }
 });
-
