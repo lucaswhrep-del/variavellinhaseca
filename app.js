@@ -46,6 +46,29 @@ form.addEventListener('submit', async (event) => {
   }
 });
 
+document.querySelector('#forgotPasswordButton').addEventListener('click', async () => {
+  const email = emailInput.value.trim().toLowerCase();
+  if (!email || !email.includes('@')) {
+    message.textContent = 'Digite seu e-mail no campo acima.';
+    emailInput.focus();
+    return;
+  }
+  message.style.color = 'var(--blue)';
+  message.textContent = 'Enviando um novo link…';
+  try {
+    auth.languageCode = 'pt-BR';
+    await sendPasswordResetEmail(auth, email, { url: `${window.location.origin}/` });
+    message.style.color = 'var(--ok)';
+    message.textContent = 'Novo link enviado. Use somente o e-mail mais recente e verifique o spam.';
+  } catch (error) {
+    console.error(error);
+    message.style.color = 'var(--danger)';
+    message.textContent = error.code === 'auth/too-many-requests'
+      ? 'Muitas solicitações. Aguarde alguns minutos e tente novamente.'
+      : 'Não foi possível enviar agora. Confirme o e-mail e tente novamente.';
+  }
+});
+
 document.querySelector('#logoutButton').addEventListener('click', () => signOut(auth));
 
 async function resolveProfile(user) {
