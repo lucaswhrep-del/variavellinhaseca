@@ -1,0 +1,42 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function email() { return request.auth.token.email; }
+    function profile() {
+      return get(/databases/$(database)/documents/users/$(email())).data;
+    }
+    function isAdmin() {
+      return signedIn() && (email() == 'lucaswhrep@gmail.com' || profile().role == 'administrador');
+    }
+    function isSupervisor() {
+      return signedIn() && profile().role == 'supervisor';
+    }
+
+    match /users/{userEmail} {
+      allow read: if signedIn() && (isAdmin() || userEmail == email());
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /periods/{period}/results/{resultId} {
+      allow read: if signedIn() && (
+        isAdmin() ||
+        resource.data.email == email() ||
+        (isSupervisor() && resource.data.supervisor == profile().name)
+      );
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /periods/{period}/returns/{returnId} {
+      allow read: if signedIn() && (
+        isAdmin() ||
+        resource.data.email == email() ||
+        (isSupervisor() && resource.data.supervisor == profile().name)
+      );
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /{document=**} { allow read, write: if false; }
+  }
+}
+

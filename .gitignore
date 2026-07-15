@@ -1,0 +1,7 @@
+real-data.js
+.env
+.env.*
+!.env.example
+service-account*.json
+firebase-admin*.json
+
