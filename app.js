@@ -75,6 +75,16 @@ async function loadResults(profile) {
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 }
 
+async function loadReturns(profile) {
+  const ref = collection(db, 'periods', PERIOD, 'returns');
+  let source;
+  if (profile.role === 'administrador' || profile.role === 'admin') source = ref;
+  else if (profile.role === 'supervisor') source = query(ref, where('supervisor', '==', profile.name));
+  else source = query(ref, where('email', '==', profile.email));
+  const snapshot = await getDocs(source);
+  return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+}
+
 const safeId = (value) => String(value || '')
   .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
   .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -144,8 +154,54 @@ window.persistImportedResults = async (results) => {
     await batch.commit();
   }
   const refreshed = await loadResults(currentProfile);
-  window.setAppSession(currentProfile, refreshed);
+  const refreshedReturns = await loadReturns(currentProfile);
+  window.setAppSession(currentProfile, refreshed, refreshedReturns);
   return { saved: results.length };
+};
+
+window.persistImportedReturns = async (returns) => {
+  const currentProfile = await resolveProfile(auth.currentUser);
+  if (!['administrador', 'admin'].includes(currentProfile.role)) throw new Error('Acesso restrito.');
+
+  const userSnapshots = await getDocs(collection(db, 'users'));
+  const usersByName = new Map(userSnapshots.docs.map((item) => {
+    const user = item.data();
+    return [String(user.name || '').trim().toUpperCase(), { ...user, email: String(user.email || item.id).toLowerCase() }];
+  }));
+  const valid = returns.filter((item) => usersByName.has(item.name.trim().toUpperCase()));
+  const skipped = returns.length - valid.length;
+  const grouped = new Map();
+  valid.forEach((item) => {
+    const key = `${item.name.trim().toUpperCase()}|${item.line.trim().toUpperCase()}`;
+    const previous = grouped.get(key) || { ...item, total: 0 };
+    previous.total += Number(item.total) || 0;
+    grouped.set(key, previous);
+  });
+
+  const ref = collection(db, 'periods', PERIOD, 'returns');
+  const previous = await getDocs(ref);
+  for (let start = 0; start < previous.docs.length; start += 400) {
+    const batch = writeBatch(db);
+    previous.docs.slice(start, start + 400).forEach((item) => batch.delete(item.ref));
+    await batch.commit();
+  }
+  const consolidated = [...grouped.values()];
+  for (let start = 0; start < consolidated.length; start += 400) {
+    const batch = writeBatch(db);
+    consolidated.slice(start, start + 400).forEach((item) => {
+      const user = usersByName.get(item.name.trim().toUpperCase());
+      const id = `${safeId(item.name)}-${safeId(item.line)}`;
+      batch.set(doc(ref, id), {
+        name: item.name.trim(), line: item.line.trim().toUpperCase(), total: Number(item.total) || 0,
+        email: user.email, supervisor: user.supervisor || user.name, updatedAt: serverTimestamp()
+      });
+    });
+    await batch.commit();
+  }
+  const refreshed = await loadResults(currentProfile);
+  const refreshedReturns = await loadReturns(currentProfile);
+  window.setAppSession(currentProfile, refreshed, refreshedReturns);
+  return { saved: consolidated.length, skipped };
 };
 
 onAuthStateChanged(auth, async (user) => {
@@ -158,8 +214,8 @@ onAuthStateChanged(auth, async (user) => {
   try {
     const profile = await resolveProfile(user);
     if (profile.active === false) throw new Error('inactive-user');
-    const results = await loadResults(profile);
-    window.setAppSession(profile, results);
+    const [results, returns] = await Promise.all([loadResults(profile), loadReturns(profile)]);
+    window.setAppSession(profile, results, returns);
     message.textContent = '';
   } catch (error) {
     console.error(error);
