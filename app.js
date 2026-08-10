@@ -10,7 +10,7 @@ import {
 import { firebaseConfig } from './firebase-config.js';
 
 const ADMIN_EMAIL = 'lucaswhrep@gmail.com';
-const PERIOD = '2026-07';
+let currentPeriod = '2026-08';
 const firebaseApp = initializeApp(firebaseConfig);
 const auth = getAuth(firebaseApp);
 const db = getFirestore(firebaseApp);
@@ -87,8 +87,8 @@ async function resolveProfile(user) {
   throw new Error('profile-not-found');
 }
 
-async function loadResults(profile) {
-  const ref = collection(db, 'periods', PERIOD, 'results');
+async function loadResults(profile, period = currentPeriod) {
+  const ref = collection(db, 'periods', period, 'results');
   let source;
   if (profile.role === 'administrador' || profile.role === 'admin') source = ref;
   else if (profile.role === 'supervisor') source = query(ref, where('supervisor', '==', profile.name));
@@ -98,8 +98,8 @@ async function loadResults(profile) {
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 }
 
-async function loadReturns(profile) {
-  const ref = collection(db, 'periods', PERIOD, 'returns');
+async function loadReturns(profile, period = currentPeriod) {
+  const ref = collection(db, 'periods', period, 'returns');
   let source;
   if (profile.role === 'administrador' || profile.role === 'admin') source = ref;
   else if (profile.role === 'supervisor') source = query(ref, where('supervisor', '==', profile.name));
@@ -156,7 +156,7 @@ window.persistImportedResults = async (results) => {
   const missing = [...new Set(results.filter((item) => !emailsByName.has(item.name.trim().toUpperCase())).map((item) => item.name))];
   if (missing.length) throw new Error(`Cadastre primeiro: ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? '…' : ''}`);
 
-  const resultRef = collection(db, 'periods', PERIOD, 'results');
+  const resultRef = collection(db, 'periods', currentPeriod, 'results');
   const previous = await getDocs(resultRef);
   for (let start = 0; start < previous.docs.length; start += 400) {
     const batch = writeBatch(db);
@@ -201,7 +201,7 @@ window.persistImportedReturns = async (returns) => {
     grouped.set(key, previous);
   });
 
-  const ref = collection(db, 'periods', PERIOD, 'returns');
+  const ref = collection(db, 'periods', currentPeriod, 'returns');
   const previous = await getDocs(ref);
   for (let start = 0; start < previous.docs.length; start += 400) {
     const batch = writeBatch(db);
@@ -225,6 +225,17 @@ window.persistImportedReturns = async (returns) => {
   const refreshedReturns = await loadReturns(currentProfile);
   window.setAppSession(currentProfile, refreshed, refreshedReturns);
   return { saved: consolidated.length, skipped };
+};
+
+window.changeAppPeriod = async (period) => {
+  if (!/^\d{4}-\d{2}$/.test(period) || !auth.currentUser) return;
+  currentPeriod = period;
+  const profile = await resolveProfile(auth.currentUser);
+  const [results, returns] = await Promise.all([
+    loadResults(profile, currentPeriod),
+    loadReturns(profile, currentPeriod)
+  ]);
+  window.setAppSession(profile, results, returns);
 };
 
 onAuthStateChanged(auth, async (user) => {
