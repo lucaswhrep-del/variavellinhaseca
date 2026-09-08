@@ -10,7 +10,7 @@ import {
 import { firebaseConfig } from './firebase-config.js';
 
 const ADMIN_EMAIL = 'lucaswhrep@gmail.com';
-let currentPeriod = '2026-08';
+let currentPeriod = '2026-09';
 const firebaseApp = initializeApp(firebaseConfig);
 const auth = getAuth(firebaseApp);
 const db = getFirestore(firebaseApp);
@@ -259,3 +259,4 @@ onAuthStateChanged(auth, async (user) => {
     await signOut(auth);
   }
 });
+
