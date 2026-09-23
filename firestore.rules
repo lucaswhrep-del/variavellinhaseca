@@ -18,6 +18,11 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
 
+    match /settings/notice {
+      allow read: if signedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
     match /periods/{period}/results/{resultId} {
       allow read: if signedIn() && (
         isAdmin() ||
@@ -39,4 +44,5 @@ service cloud.firestore {
     match /{document=**} { allow read, write: if false; }
   }
 }
+
 
