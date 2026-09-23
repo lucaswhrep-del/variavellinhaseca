@@ -108,6 +108,25 @@ async function loadReturns(profile, period = currentPeriod) {
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 }
 
+async function loadNotice() {
+  try {
+    const snapshot = await getDoc(doc(db, 'settings', 'notice'));
+    return snapshot.exists() ? snapshot.data() : null;
+  } catch (error) {
+    console.warn('Aviso indisponível:', error);
+    return null;
+  }
+}
+
+window.persistNotice = async (message) => {
+  const currentProfile = await resolveProfile(auth.currentUser);
+  if (!['administrador', 'admin'].includes(currentProfile.role)) throw new Error('Acesso restrito.');
+  const notice = { message: String(message || '').trim(), updatedAt: serverTimestamp(), updatedBy: currentProfile.name };
+  await setDoc(doc(db, 'settings', 'notice'), notice);
+  const refreshed = await getDoc(doc(db, 'settings', 'notice'));
+  return refreshed.data();
+};
+
 const safeId = (value) => String(value || '')
   .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
   .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -248,8 +267,8 @@ onAuthStateChanged(auth, async (user) => {
   try {
     const profile = await resolveProfile(user);
     if (profile.active === false) throw new Error('inactive-user');
-    const [results, returns] = await Promise.all([loadResults(profile), loadReturns(profile)]);
-    window.setAppSession(profile, results, returns);
+    const [results, returns, notice] = await Promise.all([loadResults(profile), loadReturns(profile), loadNotice()]);
+    window.setAppSession(profile, results, returns, notice);
     message.textContent = '';
   } catch (error) {
     console.error(error);
