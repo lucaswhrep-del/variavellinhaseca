@@ -10,7 +10,18 @@ import {
 import { firebaseConfig } from './firebase-config.js';
 
 const ADMIN_EMAIL = 'lucaswhrep@gmail.com';
-let currentPeriod = '2026-09';
+const saoPauloDateParts = Object.fromEntries(
+  new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit'
+  }).formatToParts(new Date()).map(({ type, value }) => [type, value])
+);
+let currentPeriod = `${saoPauloDateParts.year}-${saoPauloDateParts.month}`;
+const initialPeriodFilter = document.querySelector('#periodFilter');
+if ([...initialPeriodFilter.options].some((option) => option.value === currentPeriod)) {
+  initialPeriodFilter.value = currentPeriod;
+} else {
+  currentPeriod = initialPeriodFilter.value;
+}
 const firebaseApp = initializeApp(firebaseConfig);
 const auth = getAuth(firebaseApp);
 const db = getFirestore(firebaseApp);
