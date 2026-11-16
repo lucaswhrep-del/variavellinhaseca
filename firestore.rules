@@ -41,6 +41,15 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
 
+    match /periods/{period}/billing/{billingId} {
+      allow read: if signedIn() && (
+        isAdmin() ||
+        resource.data.email == email() ||
+        (isSupervisor() && resource.data.supervisor == profile().name)
+      );
+      allow create, update, delete: if isAdmin();
+    }
+
     match /{document=**} { allow read, write: if false; }
   }
 }
