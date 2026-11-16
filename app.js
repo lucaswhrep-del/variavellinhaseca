@@ -119,6 +119,24 @@ async function loadReturns(profile, period = currentPeriod) {
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 }
 
+async function loadBilling(profile, period = currentPeriod) {
+  const ref = collection(db, 'periods', period, 'billing');
+  if (profile.role === 'administrador' || profile.role === 'admin') {
+    const snapshot = await getDocs(ref);
+    return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+  }
+  if (profile.role === 'supervisor') {
+    const [ownSnapshot, teamSnapshot] = await Promise.all([
+      getDocs(query(ref, where('email', '==', profile.email))),
+      getDocs(query(ref, where('supervisor', '==', profile.name)))
+    ]);
+    const unique = new Map([...ownSnapshot.docs, ...teamSnapshot.docs].map((item) => [item.id, { id: item.id, ...item.data() }]));
+    return [...unique.values()];
+  }
+  const snapshot = await getDocs(query(ref, where('email', '==', profile.email)));
+  return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+}
+
 async function loadNotice() {
   try {
     const snapshot = await getDoc(doc(db, 'settings', 'notice'));
@@ -206,9 +224,10 @@ window.persistImportedResults = async (results) => {
     });
     await batch.commit();
   }
-  const refreshed = await loadResults(currentProfile);
-  const refreshedReturns = await loadReturns(currentProfile);
-  window.setAppSession(currentProfile, refreshed, refreshedReturns);
+  const [refreshed, refreshedReturns, refreshedBilling] = await Promise.all([
+    loadResults(currentProfile), loadReturns(currentProfile), loadBilling(currentProfile)
+  ]);
+  window.setAppSession(currentProfile, refreshed, refreshedReturns, null, refreshedBilling);
   return { saved: results.length };
 };
 
@@ -251,21 +270,61 @@ window.persistImportedReturns = async (returns) => {
     });
     await batch.commit();
   }
-  const refreshed = await loadResults(currentProfile);
-  const refreshedReturns = await loadReturns(currentProfile);
-  window.setAppSession(currentProfile, refreshed, refreshedReturns);
+  const [refreshed, refreshedReturns, refreshedBilling] = await Promise.all([
+    loadResults(currentProfile), loadReturns(currentProfile), loadBilling(currentProfile)
+  ]);
+  window.setAppSession(currentProfile, refreshed, refreshedReturns, null, refreshedBilling);
   return { saved: consolidated.length, skipped };
+};
+
+window.persistImportedBilling = async (billing) => {
+  const currentProfile = await resolveProfile(auth.currentUser);
+  if (!['administrador', 'admin'].includes(currentProfile.role)) throw new Error('Acesso restrito.');
+
+  const userSnapshots = await getDocs(collection(db, 'users'));
+  const usersByName = new Map(userSnapshots.docs.map((item) => {
+    const user = item.data();
+    return [String(user.name || '').trim().toUpperCase(), { ...user, email: String(user.email || item.id).toLowerCase() }];
+  }));
+  const missing = [...new Set(billing.filter((item) => !usersByName.has(item.name.trim().toUpperCase())).map((item) => item.name))];
+  if (missing.length) throw new Error(`Cadastre primeiro: ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? '…' : ''}`);
+
+  const ref = collection(db, 'periods', currentPeriod, 'billing');
+  const previous = await getDocs(ref);
+  for (let start = 0; start < previous.docs.length; start += 400) {
+    const batch = writeBatch(db);
+    previous.docs.slice(start, start + 400).forEach((item) => batch.delete(item.ref));
+    await batch.commit();
+  }
+  for (let start = 0; start < billing.length; start += 400) {
+    const batch = writeBatch(db);
+    billing.slice(start, start + 400).forEach((item) => {
+      const user = usersByName.get(item.name.trim().toUpperCase());
+      batch.set(doc(ref, safeId(item.name)), {
+        name: item.name.trim(), role: String(item.role || user.role || '').toLowerCase(),
+        prize: Number(item.prize) || 0, target: Number(item.target) || 0, result: Number(item.result) || 0,
+        email: user.email, supervisor: user.supervisor || user.name, updatedAt: serverTimestamp()
+      });
+    });
+    await batch.commit();
+  }
+  const [refreshed, refreshedReturns, refreshedBilling] = await Promise.all([
+    loadResults(currentProfile), loadReturns(currentProfile), loadBilling(currentProfile)
+  ]);
+  window.setAppSession(currentProfile, refreshed, refreshedReturns, null, refreshedBilling);
+  return { saved: billing.length };
 };
 
 window.changeAppPeriod = async (period) => {
   if (!/^\d{4}-\d{2}$/.test(period) || !auth.currentUser) return;
   currentPeriod = period;
   const profile = await resolveProfile(auth.currentUser);
-  const [results, returns] = await Promise.all([
+  const [results, returns, billing] = await Promise.all([
     loadResults(profile, currentPeriod),
-    loadReturns(profile, currentPeriod)
+    loadReturns(profile, currentPeriod),
+    loadBilling(profile, currentPeriod)
   ]);
-  window.setAppSession(profile, results, returns);
+  window.setAppSession(profile, results, returns, null, billing);
 };
 
 onAuthStateChanged(auth, async (user) => {
@@ -278,8 +337,8 @@ onAuthStateChanged(auth, async (user) => {
   try {
     const profile = await resolveProfile(user);
     if (profile.active === false) throw new Error('inactive-user');
-    const [results, returns, notice] = await Promise.all([loadResults(profile), loadReturns(profile), loadNotice()]);
-    window.setAppSession(profile, results, returns, notice);
+    const [results, returns, notice, billing] = await Promise.all([loadResults(profile), loadReturns(profile), loadNotice(), loadBilling(profile)]);
+    window.setAppSession(profile, results, returns, notice, billing);
     message.textContent = '';
   } catch (error) {
     console.error(error);
